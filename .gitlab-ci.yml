@@ -1,0 +1,106 @@
+variables:
+  # Package version can only contain numbers (0-9), and dots (.).
+  # Must be in the format of X.Y.Z, i.e. should match /\A\d+\.\d+\.\d+\z/ regular expresion.
+  # See https://docs.gitlab.com/ee/user/packages/generic_packages/#publish-a-package-file
+  APP_NAME: kpod-mount-pvc
+  PACKAGE_VERSION: "$CI_COMMIT_TAG"
+  LINUX_AMD64_BINARY: "${APP_NAME}-linux-amd64-${PACKAGE_VERSION}"
+  PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${APP_NAME}/${PACKAGE_VERSION}"
+
+include:
+  - project: 'gitlab/ci'
+    ref: master
+    file: '/templates/Vault.gitlab-ci.yml'
+
+stages:          # List of stages for jobs, and their order of execution
+  - build
+  - upload
+  - release
+  - scheduled_job
+
+build:       # This job runs in the build stage, which runs first.
+  stage: build
+  tags:
+    - k8sadmin
+  rules:
+    - if: '$CI_COMMIT_TAG == null && $CI_PIPELINE_SOURCE != "schedule"'
+  script:
+    - |
+      podman run --rm \
+          -v $PWD:/myapp \
+          -w /myapp \
+          harbor.mutual31.k8s.recouv/docker-hub-proxy/library/golang make
+    - echo "Compile complete."
+    - env
+
+build-release:
+  artifacts:
+    paths:
+      - ${APP_NAME}
+  stage: build
+  tags:
+    - k8sadmin
+  rules:
+    - if: '$CI_COMMIT_TAG != null && $CI_PIPELINE_SOURCE != "schedule"'
+  script:
+    - |
+      podman run --rm \
+        -v $PWD:/myapp \
+        -w /myapp \
+        harbor.mutual31.k8s.recouv/docker-hub-proxy/library/golang make build-release
+    - echo "Compile complete for release."
+
+upload:
+  stage: upload
+  tags:
+    - k8sadmin
+  rules:
+    - if: '$CI_COMMIT_TAG != null && $CI_PIPELINE_SOURCE != "schedule"'
+  script:
+    - echo ${PACKAGE_REGISTRY_URL}/${LINUX_AMD64_BINARY}
+    - mv ${APP_NAME} ${LINUX_AMD64_BINARY}
+    - unset http_proxy
+    - unset https_proxy
+    - |
+      curl --verbose -k --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+                  --url "${PACKAGE_REGISTRY_URL}/${LINUX_AMD64_BINARY}" \
+                  --upload-file ${LINUX_AMD64_BINARY}
+    - rm ${LINUX_AMD64_BINARY}
+
+release:
+  stage: release
+  tags:
+    - k8sadmin
+  rules:
+    - if: '$CI_COMMIT_TAG != null && $CI_PIPELINE_SOURCE != "schedule"'
+  script:
+    - echo registry.gitlab.com/gitlab-org/release-cli:latest release-cli create --name "Release $CI_COMMIT_TAG" --tag-name $CI_COMMIT_TAG --assets-link "{\"name\":\"${LINUX_AMD64_BINARY}\",\"url\":\"${PACKAGE_REGISTRY_URL}/${LINUX_AMD64_BINARY}\"}"
+    - |
+      # First, create the release notes. Release notes are an aggregation of
+      # the commits log done since the previous tag.
+      tags_count=$(git tag | wc -l)
+      if [[ ${tags_count} -eq 1 ]]; then
+        while read -u3 line; do
+          echo "- ${line}"
+        done 3< <(git log --oneline | sed ':a;N;$!ba;s/\n/\n/g') > release.md
+      else
+        prev_tag=$(git tag -l | sort -V | tail -n2 | head -n1)
+        while read -u3 line; do
+          echo "- ${line}"
+        done 3< <(git log ${prev_tag}..HEAD --oneline | sed ':a;N;$!ba;s/\n/\n/g') > release.md
+      fi
+
+      podman run --rm \
+        -v $PWD:/myapp \
+        -w /myapp \
+        registry.gitlab.com/gitlab-org/release-cli:latest release-cli \
+            --server-url ${CI_SERVER_URL} \
+            --project-id ${CI_PROJECT_ID} \
+            --job-token ${CI_JOB_TOKEN} \
+            --insecure-https \
+            create \
+            --name "Release $CI_COMMIT_TAG" \
+            --tag-name $CI_COMMIT_TAG \
+            --assets-link "{\"name\":\"${LINUX_AMD64_BINARY}\",\"url\":\"${PACKAGE_REGISTRY_URL}/${LINUX_AMD64_BINARY}\"}" \
+            --description "release.md"
+
