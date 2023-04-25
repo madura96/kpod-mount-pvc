@@ -9,10 +9,10 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
-	corev1 "k8s.io/api/core/v1"
 )
 
 var configFlags = genericclioptions.NewConfigFlags(true)
@@ -32,11 +32,11 @@ var rootCmd = &cobra.Command{
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	Run: func(cmd *cobra.Command, args []string) {
-		if pvcName == "" {
-			fmt.Println("Il faut fournir le nom du PVC avec l'option nécessaire")
-			os.Exit(1)
+		ns := *configFlags.Namespace
+		if ns == "" {
+			ns = "default"
 		}
-		pvc, err := clientK8s.CoreV1().PersistentVolumeClaims(*configFlags.Namespace).Get(context.TODO(), pvcName, metav1.GetOptions{})
+		pvc, err := clientK8s.CoreV1().PersistentVolumeClaims(ns).Get(context.TODO(), pvcName, metav1.GetOptions{})
 		if err != nil {
 			fmt.Printf("Failed to get PVC name. Error stack:\n %+v\n", err)
 			os.Exit(1)
@@ -46,32 +46,32 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		// create volume in memory
-		volumes := make([]corev1.Volume,1)
-		volumes[0] = corev1.Volume {
+		volumes := make([]corev1.Volume, 1)
+		volumes[0] = corev1.Volume{
 			Name: "volume1",
-			VolumeSource: corev1.VolumeSource{ 
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource { ClaimName: pvcName }, 
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName},
 			},
 		}
 
 		// create pod in memory
 		pod := corev1.Pod{}
 		pod.ObjectMeta.Name = "mount"
-		pod.ObjectMeta.Namespace = *configFlags.Namespace
-		containers := make([]corev1.Container,1)
+		pod.ObjectMeta.Namespace = ns
+		containers := make([]corev1.Container, 1)
 		containers[0] = corev1.Container{
-			Name: "container1",
-			Image: "busybox",
-			Command: []string{ "/bin/sleep", "infinity" }, // with infinity, do not restart
+			Name:    "container1",
+			Image:   "busybox",
+			Command: []string{"/bin/sleep", "infinity"}, // with infinity, do not restart
 			VolumeMounts: []corev1.VolumeMount{
-					{ Name: volumes[0].Name, MountPath: "/data" },
-				},
+				{Name: volumes[0].Name, MountPath: "/data"},
+			},
 		}
 		pod.Spec.Containers = containers
 		pod.Spec.Volumes = volumes
 
 		// submit the pod to k8s
-		_, err = clientK8s.CoreV1().Pods(*configFlags.Namespace).Create(context.TODO(), &pod, metav1.CreateOptions{})
+		_, err = clientK8s.CoreV1().Pods(ns).Create(context.TODO(), &pod, metav1.CreateOptions{})
 		if err != nil {
 			fmt.Printf("Failed to create POD. Error stack:\n %+v\n", err)
 			os.Exit(1)
@@ -99,7 +99,8 @@ func init() {
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
 	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-	rootCmd.Flags().StringVarP(&pvcName, "pvc-name", "p", "", "Name of the PVC to mount")
+	rootCmd.Flags().StringVarP(&pvcName, "pvc-name", "p", "", "Name of the PVC to mount (required)")
+	rootCmd.MarkFlagRequired("pvc-name")
 }
 
 func configureK8sClient(flags *genericclioptions.ConfigFlags) *kubernetes.Clientset {
