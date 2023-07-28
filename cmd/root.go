@@ -6,6 +6,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -64,8 +65,18 @@ var rootCmd = &cobra.Command{
 		fmt.Printf("Creating the pod %q in memory\n", pod.ObjectMeta.Name)
 		containers := make([]corev1.Container, 1)
 		containers[0] = corev1.Container{
-			Name:    "container1",
-			Image:   "busybox",
+			Name:  "container1",
+			Image: "busybox",
+			Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("1Gi"),
+				},
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("1Gi"),
+				},
+			},
 			Command: []string{"/bin/sleep", "infinity"}, // with infinity, do not restart
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: volumes[0].Name, MountPath: "/data"},
